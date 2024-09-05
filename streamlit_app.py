@@ -1,53 +1,113 @@
 import streamlit as st
-from openai import OpenAI
+from langchain.chat_models import ChatOpenAI
+from langchain.document_loaders import UnstructuredFileLoader, PyPDFLoader, TextLoader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.memory import ConversationBufferMemory
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.storage import LocalFileStore
+from langchain.prompts import ChatPromptTemplate
+import tempfile
+import os
 
-# Show title and description.
-st.title("📄 Document question answering")
+
+st.title("📄 Assignment 15")
 st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
+    "문서를 업로드하면 GPT가 문서를 읽고 답을 드려요"
+    "OpenAPI 사용을 위해 Settings에 API Key를 입력해주세요"
+)
+cache_dir = LocalFileStore("./.cache/")
+
+with st.sidebar:
+    st.title("Settings")
+    st.markdown("***")
+    openai_api_key = st.text_input("OpenAI API Key", type="password")
+    if not openai_api_key:
+        st.info("Please add your OpenAI API key to continue.", icon="🗝️")
+
+    uploaded_file = st.file_uploader(
+        "문서 파일을 업로드해주세요 (.txt, .pdf, .docx)", type=("txt", "pdf", "docx")
+    )
+
+question = st.text_area(
+    "문서에 대해 질문을 하세요",
+    placeholder="문서 요약좀 해줄래?",
+    disabled=not uploaded_file,
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+if openai_api_key and uploaded_file and question:
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        tmp_file_path = tmp_file.name
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+    llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4o-mini", temperature=0.1)
 
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
+    # 파일 형식에 맞는 로더 선택
+    file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+
+    if file_extension == ".pdf":
+        loader = PyPDFLoader(tmp_file_path)  # PDF 파일 처리
+    elif file_extension == ".txt":
+        loader = TextLoader(tmp_file_path)  # 텍스트 파일 처리
+    elif file_extension == ".docx":
+        loader = UnstructuredFileLoader(tmp_file_path)  # DOCX 파일 처리
+    else:
+        st.error("지원되지 않는 파일 형식입니다.")
+        st.stop()
+
+    splitter = CharacterTextSplitter.from_tiktoken_encoder(
+        separator="\n",
+        chunk_size=600,
+        chunk_overlap=100,
     )
 
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
+    docs = loader.load_and_split(text_splitter=splitter)
 
-    if uploaded_file and question:
+    embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    retriever = vectorstore.as_retriever()
 
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
+    prompt_template = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a helpful assistant. Answer questions using only the following context. If you don't know the answer just say you don't know, don't make it up:\n\n{context}, and say in Korean Only.",
+            ),
+            ("human", "{question}"),
         ]
+    )
 
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
-        )
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+    def chain_with_memory(question):
+        chat_history = memory.load_memory_variables({}).get("chat_history", "")
+
+        relevant_docs = retriever.get_relevant_documents(question)
+        context = "\n\n".join([doc.page_content for doc in relevant_docs])
+
+        inputs = {
+            "context": context,
+            "question": question,
+            "chat_history": chat_history,
+        }
+
+        prompt = prompt_template.format_messages(**inputs)
+        response = llm(prompt)
+
+        memory.save_context({"question": question}, {"answer": response.content})
+
+        return response.content
+
+    if st.button("질문에 답변 받기"):
+        with st.spinner("GPT가 문서를 읽고 답변 중입니다..."):
+            answer = chain_with_memory(question)
+            st.write("### 답변:")
+            st.write(answer)
+
+# 오류 또는 알림 처리
+elif not openai_api_key:
+    st.warning("OpenAI API 키를 입력해주세요.")
+elif not uploaded_file:
+    st.info("문서를 업로드해주세요.")
+elif not question:
+    st.info("문서에 대해 질문을 입력해주세요.")
