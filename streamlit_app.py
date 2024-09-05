@@ -28,6 +28,10 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "문서 파일을 업로드해주세요 (.txt, .pdf, .docx)", type=("txt", "pdf", "docx")
     )
+    st.markdown("***")
+    st.link_button(
+        "Github Repo 바로가기", "https://github.com/asuracoder91/streamlit_rag"
+    )
 
 question = st.text_area(
     "문서에 대해 질문을 하세요",
