@@ -11,7 +11,7 @@ import tempfile
 import os
 
 
-st.title("📄 Assignment 15")
+st.title("📄 Assignment 6")
 st.write(
     "문서를 업로드하면 GPT가 문서를 읽고 답을 드려요"
     "OpenAPI 사용을 위해 Settings에 API Key를 입력해주세요"
